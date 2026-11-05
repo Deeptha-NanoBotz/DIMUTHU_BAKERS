@@ -13,6 +13,7 @@ use App\Models\AdCubusinessHasReturnProductItem;
 use App\Models\AdCustomerHasBusiness;
 use App\Models\AdRoute;
 use App\Models\PmProductItem;
+use App\Models\PmProductCategory;
 use App\Models\StmOrderRequest;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
@@ -2125,5 +2126,231 @@ class ReportController extends Controller
         return response(view('reports.exports.excel.allAgentOrderRequests', $viewData))
             ->header('Content-Type', 'application/vnd.ms-excel')
             ->header('Content-Disposition', 'attachment; filename="'.$fileName.'.xls"');
+    }
+
+    public function skuTargetVsActualIndex()
+    {
+        $agents = AdAgent::where('status', 1)->get(['id', 'agent_name', 'agent_code']);
+        return view('reports.skuTargetVsActual', compact('agents'));
+    }
+
+    private function _buildSkuTargetVsActualData(Request $request)
+    {
+        $request->validate([
+            'agent_id' => 'required|integer',
+            'start_date' => 'required|date',
+            'end_date' => 'required|date',
+        ]);
+
+        $agentId = (int) $request->input('agent_id');
+        $startDate = Carbon::parse($request->input('start_date'))->startOfDay();
+        $endDate = Carbon::parse($request->input('end_date'))->endOfDay();
+
+        $agent = AdAgent::find($agentId);
+        $targetYear = $endDate->year;
+        $targetMonth = $endDate->month;
+
+        // Monthly Target
+        $monthlyTargetRec = AdAgentMonthlyTarget::where('agent_id', $agentId)
+            ->where('target_year', $targetYear)
+            ->where('target_month', $targetMonth)
+            ->first();
+        $monthlyTargetId = $monthlyTargetRec ? $monthlyTargetRec->id : null;
+
+        // Days prorate calculation
+        $daysInMonth = $startDate->daysInMonth; // e.g. 31
+        $selectedDays = max(1, (int) round(abs($endDate->diffInDays($startDate))) + 1);
+        $prorateRatio = min(1.0, $selectedDays / $daysInMonth);
+
+        // Invoices for this agent
+        $customerIds = AdCustomerHasBusiness::where('agent_id', $agentId)->pluck('id')->toArray();
+        $invoiceIds = AdCubusinessHasInvoice::whereIn('ad_customer_has_business_id', $customerIds)
+            ->whereBetween('created_at', [$startDate, $endDate])
+            ->pluck('id')
+            ->toArray();
+
+        // Actual sold quantities
+        $soldQuantities = AdCubusinessHasProductItem::whereIn('ad_cubusiness_has_invoice_id', $invoiceIds)
+            ->selectRaw('pm_product_item_id, SUM(quantity) as actual_qty')
+            ->groupBy('pm_product_item_id')
+            ->pluck('actual_qty', 'pm_product_item_id')
+            ->toArray();
+
+        // Item targets from DB
+        $itemTargetsMap = [];
+        if ($monthlyTargetId) {
+            $itemTargets = AdAgentHasItemTargets::where('monthly_target_id', $monthlyTargetId)->get();
+            foreach ($itemTargets as $it) {
+                if ((float) $it->target_qty > 0) {
+                    $itemTargetsMap[$it->pm_product_item_id] = (float) $it->target_qty;
+                }
+            }
+        }
+
+        // Baseline defaults for common SKUs if not explicitly configured in DB
+        $baselineMonthlyTargets = [
+            'Kurakkan bread 200g' => 310,
+            'Sandwitch Bread 400g' => 13400,
+            'Budget Pack 100g' => 14000,
+            'Chocolate Budget Pack 100g' => 5200,
+            'Double Bun 90g' => 16500,
+            'Six Pack Bun 270g' => 1550,
+            'Strawberry Budget Pack 100g' => 4150,
+            'Cream Bun 60g' => 400,
+            'Ada Packet 170g' => 410,
+            'Spanchi Packet 170g' => 1030,
+            'Chocolate Cake 500g' => 150,
+            'Date Cake 500g' => 60,
+            'Tea Cake 500g' => 60,
+            'Aman Biscuits 120g' => 50,
+            'Butter Rusk 90g' => 100,
+            'Ghanakatha 135g' => 230,
+            'Iguru Aegili 120g.' => 40,
+            'Seeni Aegili 120g.' => 40,
+            'Seeni Pathuru 145g' => 80,
+            'Tea Rusk 150g' => 930,
+            'Viskirinna 90g' => 70,
+        ];
+
+        // Categories in specific bakery order: Bread (5), Bun (4), Cake (6), Rusk & Cookies (7)
+        $categories = PmProductCategory::whereIn('id', [5, 4, 6, 7])
+            ->orderByRaw("FIELD(id, 5, 4, 6, 7)")
+            ->get();
+
+        $categoryData = [];
+        $grandTarget = 0;
+        $grandActual = 0;
+
+        foreach ($categories as $cat) {
+            $cName = $cat->category_name;
+            if ($cName === 'Bun') $displayName = 'Bun Category';
+            elseif ($cName === 'Rusk and Cookies') $displayName = 'Rusk & Cookies';
+            else $displayName = $cName;
+
+            $catItems = PmProductItem::where('pm_product_category_id', $cat->id)
+                ->where('status', 1)
+                ->get();
+
+            $itemsList = [];
+            $subTarget = 0;
+            $subActual = 0;
+
+            foreach ($catItems as $p) {
+                $pId = $p->id;
+                $cleanName = trim(rtrim($p->product_name, '.'));
+                $displayPName = ucwords(strtolower($cleanName));
+                if (stripos($displayPName, 'Sandwitch') !== false || stripos($displayPName, 'Sandwich') !== false) {
+                    $displayPName = 'Sandwitch Bread 400g';
+                }
+
+                if (isset($itemTargetsMap[$pId])) {
+                    $mTarget = $itemTargetsMap[$pId];
+                } else {
+                    $mTarget = $baselineMonthlyTargets[$p->product_name] ?? ($baselineMonthlyTargets[$cleanName] ?? 50);
+                }
+
+                $proratedTarget = (int) round($mTarget * $prorateRatio);
+                $actual = (int) ($soldQuantities[$pId] ?? 0);
+
+                $gap = $actual - $proratedTarget;
+                $achievement = $proratedTarget > 0 ? round(($actual / $proratedTarget) * 100) : ($actual > 0 ? 100 : 0);
+
+                $itemsList[] = [
+                    'id' => $pId,
+                    'name' => $displayPName,
+                    'target' => $proratedTarget,
+                    'actual' => $actual,
+                    'achievement' => $achievement,
+                    'gap' => $gap,
+                    'is_achieved' => ($gap >= 0),
+                ];
+
+                $subTarget += $proratedTarget;
+                $subActual += $actual;
+            }
+
+            usort($itemsList, fn($a, $b) => strcmp($a['name'], $b['name']));
+
+            $subGap = $subActual - $subTarget;
+            $subAch = $subTarget > 0 ? round(($subActual / $subTarget) * 100) : ($subActual > 0 ? 100 : 0);
+
+            $categoryData[] = [
+                'category_id' => $cat->id,
+                'category_name' => $displayName,
+                'items' => $itemsList,
+                'subtotal_target' => $subTarget,
+                'subtotal_actual' => $subActual,
+                'subtotal_achievement' => $subAch,
+                'subtotal_gap' => $subGap,
+                'is_achieved' => ($subGap >= 0),
+            ];
+
+            $grandTarget += $subTarget;
+            $grandActual += $subActual;
+        }
+
+        $grandGap = $grandActual - $grandTarget;
+        $grandAch = $grandTarget > 0 ? round(($grandActual / $grandTarget) * 100) : ($grandActual > 0 ? 100 : 0);
+
+        $sFormatted = $startDate->format('d M Y');
+        $eFormatted = $endDate->format('d M Y');
+
+        $configPath = public_path('system_config.json');
+        $companyInfo = file_exists($configPath) ? json_decode(file_get_contents($configPath), true) : null;
+        $companyName = $companyInfo['business_name'] ?? 'Dimuthu Bake House';
+
+        return [
+            'agent' => [
+                'id' => $agent->id ?? $agentId,
+                'name' => $agent->agent_name ?? 'Unknown',
+                'code' => $agent->agent_code ?? 'N/A',
+            ],
+            'header_info' => [
+                'company_name' => $companyName,
+                'agent_label' => ($agent->agent_name ?? 'Unknown') . ' (' . ($agent->agent_code ?? 'N/A') . ')',
+                'date_range_label' => "{$sFormatted} – {$eFormatted}",
+                'subtitle' => "{$companyName} • " . ($agent->agent_name ?? 'Unknown') . " (" . ($agent->agent_code ?? 'N/A') . ") • {$sFormatted} – {$eFormatted}",
+                'from_date' => $sFormatted,
+                'to_date' => $eFormatted,
+                'from_raw' => $startDate->format('Y-m-d'),
+                'to_raw' => $endDate->format('Y-m-d'),
+                'generated_at' => Carbon::now()->format('d M Y, h:i A'),
+            ],
+            'categories' => $categoryData,
+            'totals' => [
+                'target' => $grandTarget,
+                'actual' => $grandActual,
+                'achievement' => $grandAch,
+                'gap' => $grandGap,
+                'is_achieved' => ($grandGap >= 0),
+            ],
+            'proration' => [
+                'selected_days' => $selectedDays,
+                'days_in_month' => $daysInMonth,
+                'ratio' => $prorateRatio,
+            ],
+        ];
+    }
+
+    public function getSkuTargetVsActualData(Request $request)
+    {
+        $data = $this->_buildSkuTargetVsActualData($request);
+        return response()->json(array_merge(['success' => true], $data));
+    }
+
+    public function exportSkuTargetVsActualPdf(Request $request)
+    {
+        $data = $this->_buildSkuTargetVsActualData($request);
+
+        $configPath = public_path('system_config.json');
+        $companyInfo = file_exists($configPath) ? json_decode(file_get_contents($configPath), true) : null;
+
+        $pdf = Pdf::loadView('reports.exports.pdf.skuTargetVsActual', [
+            'data' => $data,
+            'companyInfo' => $companyInfo,
+        ])->setPaper('a4', 'portrait');
+
+        $fileName = 'SKU_Target_vs_Actual_' . ($data['agent']['name'] ?? 'Agent') . '_' . $request->input('start_date') . '.pdf';
+        return $pdf->download($fileName);
     }
 }
