@@ -2,7 +2,55 @@
 
 @section('content')
 
+    <!-- Flatpickr & MonthSelect Plugin -->
+    <link rel="stylesheet" href="{{ asset('vendor/flatpickr/flatpickr.min.css') }}">
+    <link rel="stylesheet" href="{{ asset('vendor/flatpickr/plugins/monthSelect/style.css') }}">
+    <script src="{{ asset('vendor/flatpickr/flatpickr.min.js') }}"></script>
+    <script src="{{ asset('vendor/flatpickr/plugins/monthSelect/index.js') }}"></script>
+
     <style>
+        /* Flatpickr Month Picker Styling */
+        .flatpickr-calendar {
+            background: #ffffff;
+            border-radius: 0.75rem;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.05);
+            border: 1px solid #fed7aa;
+            padding: 0.5rem;
+            font-family: inherit;
+        }
+        .flatpickr-months {
+            border-bottom: 1px solid #ffedd5;
+            padding-bottom: 0.25rem;
+        }
+        .flatpickr-current-month {
+            font-size: 0.95rem;
+            font-weight: 700;
+            color: #9a3412;
+            padding-top: 4px;
+        }
+        .flatpickr-current-month .cur-year {
+            font-weight: 700;
+            color: #9a3412;
+        }
+        .flatpickr-monthSelect-month {
+            border-radius: 0.5rem;
+            padding: 0.65rem 0.4rem;
+            font-weight: 600;
+            font-size: 0.82rem;
+            color: #374151;
+            transition: all 0.15s ease;
+        }
+        .flatpickr-monthSelect-month:hover {
+            background: #fff8ed;
+            color: #9a3412;
+            border-color: #fed7aa;
+        }
+        .flatpickr-monthSelect-month.selected {
+            background: #8c4314 !important;
+            border-color: #8c4314 !important;
+            color: #ffffff !important;
+            font-weight: 700;
+        }
         .report-header {
             background-color: #b45309;
             /* Amber 700 */

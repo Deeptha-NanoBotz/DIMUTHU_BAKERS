@@ -5,12 +5,15 @@ namespace App\Http\Controllers;
 use App\Models\AdAgent;
 use App\Models\AdAgentMonthlyTarget;
 use App\Models\AdCubusinessHasInvoice;
+use App\Models\AdCubusinessHasProductItem;
 use App\Models\AdCubusinessHasReturnProductItem;
 use App\Models\AdCustomerHasBusiness;
 use App\Models\AdRoute;
+use App\Models\PmProductItem;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class ReportController extends Controller
 {
@@ -772,8 +775,13 @@ class ReportController extends Controller
         $agents = AdAgent::where('status', 1)->get();
         $leaderboard = [];
         $nextMonthTargets = [];
+        $agentCreditSummary = [];
 
         $allAssignedCustomerIds = [];
+
+        // Previous month date range (for growth comparison)
+        $prevStartDate = $startDate->copy()->subMonth()->startOfMonth();
+        $prevEndDate = $prevStartDate->copy()->endOfMonth();
 
         foreach ($agents as $agent) {
             $agentId = $agent->id;
@@ -884,6 +892,23 @@ class ReportController extends Controller
                 'bonus_qualified' => $bonusQualified,
                 'target_rate' => $targetCommissionRate,
             ];
+
+            // Agent × Retail Outlet Credit Summary
+            $agentCreditIssued = $invoices->sum('net_price');
+            if ($agentCreditIssued <= 0) {
+                $agentCreditIssued = $monthlySales;
+            }
+            $agentCollected = $totalCollections;
+            $agentOutstanding = $closingDues;
+            $agentCollectionPct = $agentCreditIssued > 0 ? round(($agentCollected / $agentCreditIssued) * 100) : 0;
+
+            $agentCreditSummary[] = [
+                'agent_name' => $agent->agent_name,
+                'credit_issued' => $agentCreditIssued,
+                'collected' => $agentCollected,
+                'outstanding' => $agentOutstanding,
+                'collection_pct' => $agentCollectionPct,
+            ];
         }
 
         // Sort Leaderboard by Achievement % DESC
@@ -951,13 +976,13 @@ class ReportController extends Controller
             $outstanding = max(0, $inv->net_price - $inv->total_amount_paid);
             if ($outstanding > 0) {
                 $cTotal += $outstanding;
-                $daysOld = $endDate->diffInDays(Carbon::parse($inv->created_at));
+                $daysOld = max(0, (int) round(abs($endDate->diffInDays(Carbon::parse($inv->created_at)))));
 
-                if ($daysOld <= 30) {
+                if ($daysOld <= 14) {
                     $cCurrent += $outstanding;
-                } elseif ($daysOld <= 60) {
+                } elseif ($daysOld <= 30) {
                     $c30 += $outstanding;
-                } elseif ($daysOld <= 90) {
+                } elseif ($daysOld <= 60) {
                     $c60 += $outstanding;
                 } else {
                     $c60Plus += $outstanding;
@@ -972,8 +997,197 @@ class ReportController extends Controller
             'days_60_plus' => ['amount' => $c60Plus, 'pct' => $cTotal > 0 ? round(($c60Plus / $cTotal) * 100) : 0],
         ];
 
+        // ============================================================
+        // Top 5 Highest Credit Balance Retail Shops
+        // ============================================================
+        $allAssignedCustomerIdsUnique = array_unique($allAssignedCustomerIds);
+        $topCreditShops = [];
+
+        $allShopInvoices = AdCubusinessHasInvoice::whereIn('ad_customer_has_business_id', $allAssignedCustomerIdsUnique)
+            ->where('created_at', '<=', $endDate)
+            ->get();
+
+        $shopBalances = [];
+        foreach ($allShopInvoices as $inv) {
+            $outstanding = max(0, $inv->net_price - $inv->total_amount_paid);
+            if ($outstanding > 0) {
+                $busId = $inv->ad_customer_has_business_id;
+                if (!isset($shopBalances[$busId])) {
+                    $shopBalances[$busId] = ['balance' => 0, 'oldest_date' => $inv->created_at];
+                }
+                $shopBalances[$busId]['balance'] += $outstanding;
+                // Track oldest unpaid invoice for days outstanding
+                if (Carbon::parse($inv->created_at)->lt(Carbon::parse($shopBalances[$busId]['oldest_date']))) {
+                    $shopBalances[$busId]['oldest_date'] = $inv->created_at;
+                }
+            }
+        }
+
+        // Sort by balance desc and take top 5
+        arsort($shopBalances);
+        $topCreditShopIds = array_slice(array_keys($shopBalances), 0, 5, true);
+
+        foreach ($topCreditShopIds as $busId) {
+            $business = AdCustomerHasBusiness::find($busId);
+            if (!$business) continue;
+            $agentRec = AdAgent::find($business->agent_id);
+            $daysOutstanding = max(0, (int) round(abs($endDate->diffInDays(Carbon::parse($shopBalances[$busId]['oldest_date'])))));
+
+            $termsDays = $business->payment_terms_days ?: 30;
+            $status = 'Within term';
+            if ($daysOutstanding > $termsDays) {
+                $status = 'Overdue';
+            } elseif ($business->credit_limit > 0 && $shopBalances[$busId]['balance'] >= ($business->credit_limit * 0.8)) {
+                $status = 'Near limit';
+            }
+
+            $topCreditShops[] = [
+                'outlet_name' => $business->business_name ?? ('Outlet #' . $busId),
+                'agent_name' => $agentRec ? $agentRec->agent_name : 'N/A',
+                'balance' => $shopBalances[$busId]['balance'],
+                'days_outstanding' => $daysOutstanding,
+                'status' => $status,
+            ];
+        }
+
+        // ============================================================
+        // Top 5 Highest Sale Retail Shops (current month)
+        // ============================================================
+        $allMonthInvoices = AdCubusinessHasInvoice::whereIn('ad_customer_has_business_id', $allAssignedCustomerIdsUnique)
+            ->whereBetween('created_at', [$startDate, $endDate])
+            ->get();
+
+        $shopSales = [];
+        foreach ($allMonthInvoices as $inv) {
+            $busId = $inv->ad_customer_has_business_id;
+            if (!isset($shopSales[$busId])) {
+                $shopSales[$busId] = 0;
+            }
+            $shopSales[$busId] += $inv->invoice_price;
+        }
+
+        // Previous month sales per shop
+        $prevMonthInvoices = AdCubusinessHasInvoice::whereIn('ad_customer_has_business_id', $allAssignedCustomerIdsUnique)
+            ->whereBetween('created_at', [$prevStartDate, $prevEndDate])
+            ->get();
+
+        $shopSalesPrev = [];
+        foreach ($prevMonthInvoices as $inv) {
+            $busId = $inv->ad_customer_has_business_id;
+            if (!isset($shopSalesPrev[$busId])) {
+                $shopSalesPrev[$busId] = 0;
+            }
+            $shopSalesPrev[$busId] += $inv->invoice_price;
+        }
+
+        arsort($shopSales);
+        $topSaleShopIds = array_slice(array_keys($shopSales), 0, 5, true);
+        $topSaleShops = [];
+
+        foreach ($topSaleShopIds as $busId) {
+            $business = AdCustomerHasBusiness::find($busId);
+            if (!$business) continue;
+            $agentRec = AdAgent::find($business->agent_id);
+            $prevSale = $shopSalesPrev[$busId] ?? 0;
+            $currentSale = $shopSales[$busId];
+            $vsLastMonth = $prevSale > 0 ? round((($currentSale - $prevSale) / $prevSale) * 100, 1) : ($currentSale > 0 ? 100 : 0);
+
+            $topSaleShops[] = [
+                'outlet_name' => $business->business_name ?? ('Outlet #' . $busId),
+                'agent_name' => $agentRec ? $agentRec->agent_name : 'N/A',
+                'sales' => $currentSale,
+                'vs_last_month' => $vsLastMonth,
+            ];
+        }
+
+        // ============================================================
+        // Top 5 Fast Moving SKUs
+        // ============================================================
+        $allMonthInvoiceIds = $allMonthInvoices->pluck('id')->toArray();
+        $totalBranchSales = $allMonthInvoices->sum('invoice_price');
+
+        $skuSales = AdCubusinessHasProductItem::whereIn('ad_cubusiness_has_invoice_id', $allMonthInvoiceIds)
+            ->select('pm_product_item_id', DB::raw('SUM(quantity) as total_qty'), DB::raw('SUM(total_price) as total_sales'))
+            ->groupBy('pm_product_item_id')
+            ->orderByDesc('total_qty')
+            ->limit(5)
+            ->get();
+
+        // Calculate working days in the month (Mon-Sat, 6 days/week)
+        $workingDays = 0;
+        $tempDate = $startDate->copy();
+        while ($tempDate->lte($endDate)) {
+            if ($tempDate->dayOfWeek !== Carbon::SUNDAY) {
+                $workingDays++;
+            }
+            $tempDate->addDay();
+        }
+        if ($workingDays === 0) $workingDays = 1;
+
+        $topSkus = [];
+        foreach ($skuSales as $sku) {
+            $productItem = PmProductItem::find($sku->pm_product_item_id);
+            $skuName = $productItem ? $productItem->product_name : ('SKU #' . $sku->pm_product_item_id);
+            $branchPct = $totalBranchSales > 0 ? round(($sku->total_sales / $totalBranchSales) * 100, 1) : 0;
+
+            $topSkus[] = [
+                'sku_name' => $skuName,
+                'units_sold' => $sku->total_qty,
+                'units_per_day' => round($sku->total_qty / $workingDays),
+                'sales' => $sku->total_sales,
+                'branch_pct' => $branchPct,
+            ];
+        }
+
+        // ============================================================
+        // Top 5 Highest Sales Growth Retail Shops (month over month)
+        // ============================================================
+        $topGrowthShops = [];
+        $growthData = [];
+
+        foreach ($shopSales as $busId => $currentSale) {
+            $prevSale = $shopSalesPrev[$busId] ?? 0;
+            if ($prevSale > 0) {
+                $growthRs = $currentSale - $prevSale;
+                $growthPct = round(($growthRs / $prevSale) * 100, 1);
+                $growthData[$busId] = [
+                    'current' => $currentSale,
+                    'prev' => $prevSale,
+                    'growth_rs' => $growthRs,
+                    'growth_pct' => $growthPct,
+                ];
+            }
+        }
+
+        // Sort by growth Rs desc (ranked by growth in Rs.)
+        uasort($growthData, function ($a, $b) {
+            return $b['growth_rs'] <=> $a['growth_rs'];
+        });
+        $topGrowthIds = array_slice(array_keys($growthData), 0, 5, true);
+
+        $prevMonthLabel = $prevStartDate->format('M');
+        $currentMonthLabel = $startDate->format('M');
+
+        foreach ($topGrowthIds as $busId) {
+            $business = AdCustomerHasBusiness::find($busId);
+            if (!$business) continue;
+            $agentRec = AdAgent::find($business->agent_id);
+            $gd = $growthData[$busId];
+
+            $topGrowthShops[] = [
+                'outlet_name' => $business->business_name ?? ('Outlet #' . $busId),
+                'agent_name' => $agentRec ? $agentRec->agent_name : 'N/A',
+                'prev_sales' => $gd['prev'],
+                'current_sales' => $gd['current'],
+                'growth_rs' => $gd['growth_rs'],
+                'growth_pct' => $gd['growth_pct'],
+            ];
+        }
+
         return [
             'leaderboard' => $leaderboard,
+            'agent_credit_summary' => $agentCreditSummary,
+            'top_credit_shops' => $topCreditShops,
             'outlet_movement' => [
                 'opening' => $totalActiveOpening,
                 'new_shops' => $totalNewShops,
@@ -981,6 +1195,11 @@ class ReportController extends Controller
                 'closing' => $closingActive,
                 'growth_pct' => $activeGrowth,
             ],
+            'top_sale_shops' => $topSaleShops,
+            'top_skus' => $topSkus,
+            'top_growth_shops' => $topGrowthShops,
+            'prev_month_label' => $prevMonthLabel,
+            'current_month_label' => $currentMonthLabel,
             'return_trend' => $months,
             'credit_ageing' => $creditAgeing,
             'next_targets' => [
