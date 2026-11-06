@@ -195,6 +195,43 @@
             border-top: 1px solid #f3f4f6;
         }
 
+        /* Missing Target Badge */
+        .no-target-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 6px;
+            cursor: help;
+        }
+
+        .no-target-badge .dash {
+            color: #9ca3af;
+            font-weight: 700;
+            font-size: 14px;
+        }
+
+        .no-target-badge .badge-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 17px;
+            height: 17px;
+            font-size: 11px;
+            font-weight: 800;
+            color: #92400e;
+            background: #fef3c7;
+            border: 1px solid #fcd34d;
+            border-radius: 50%;
+            line-height: 1;
+            transition: transform 0.15s ease, background-color 0.15s ease;
+        }
+
+        .no-target-badge:hover .badge-icon {
+            transform: scale(1.18);
+            background: #fde68a;
+            border-color: #f59e0b;
+        }
+
         /* Loading */
         #loadingSpinner {
             padding: 30px;
@@ -283,7 +320,7 @@
 
                 <!-- Footnote -->
                 <div class="note-footer" id="reportFootnote" style="display: none;">
-                    Units. Target = monthly SKU target prorated to the selected dates. Red = below target (left behind), green = target achieved.
+                    Units. Target = monthly SKU target prorated to the selected dates. Red = below target (left behind), green = target achieved. &nbsp;•&nbsp; <span style="display: inline-flex; align-items: center; gap: 4px;"><span style="display:inline-flex; align-items:center; justify-content:center; width:15px; height:15px; font-size:10px; font-weight:800; color:#92400e; background:#fef3c7; border:1px solid:#fcd34d; border-radius:50%;">!</span> <strong>Target not added for this item in selected period</strong></span>
                 </div>
             </div>
         </div>
@@ -378,52 +415,90 @@
 
                 // Product Rows
                 cat.items.forEach(it => {
-                    const achColor = it.is_achieved ? '#16a34a' : '#dc2626';
-                    const gapColor = it.is_achieved ? '#16a34a' : '#dc2626';
-                    const gapPrefix = it.gap > 0 ? '+' : (it.gap < 0 ? '-' : '');
-                    const gapDisplay = gapPrefix + formatNumber(Math.abs(it.gap));
+                    let targetHtml, achHtml, gapHtml;
+
+                    if (it.has_target) {
+                        const achColor = it.is_achieved ? '#16a34a' : '#dc2626';
+                        const gapColor = it.is_achieved ? '#16a34a' : '#dc2626';
+                        const gapPrefix = it.gap > 0 ? '+' : (it.gap < 0 ? '-' : '');
+                        const gapDisplay = gapPrefix + formatNumber(Math.abs(it.gap));
+
+                        targetHtml = `<td class="n">${formatNumber(it.target)}</td>`;
+                        achHtml = `<td class="n" style="color:${achColor};font-weight:700;">${it.achievement}%</td>`;
+                        gapHtml = `<td class="n" style="color:${gapColor};font-weight:600;">${gapDisplay}</td>`;
+                    } else {
+                        targetHtml = `
+                            <td class="n">
+                                <span class="no-target-badge" title="Target not added for this item in selected period">
+                                    <span class="dash">-</span>
+                                    <span class="badge-icon" title="Target not added for this item in selected period">!</span>
+                                </span>
+                            </td>
+                        `;
+                        achHtml = `<td class="n" style="color:#9ca3af;font-weight:600;">-</td>`;
+                        gapHtml = `<td class="n" style="color:#9ca3af;font-weight:600;">-</td>`;
+                    }
 
                     tbody.innerHTML += `
                         <tr class="">
                             <td>${it.name}</td>
-                            <td class="n">${formatNumber(it.target)}</td>
+                            ${targetHtml}
                             <td class="n">${formatNumber(it.actual)}</td>
-                            <td class="n" style="color:${achColor};font-weight:700;">${it.achievement}%</td>
-                            <td class="n" style="color:${gapColor};">${gapDisplay}</td>
+                            ${achHtml}
+                            ${gapHtml}
                         </tr>
                     `;
                 });
 
                 // Category Subtotal Row
-                const subAchColor = cat.is_achieved ? '#16a34a' : '#dc2626';
-                const subGapColor = cat.is_achieved ? '#16a34a' : '#dc2626';
-                const subGapPrefix = cat.subtotal_gap > 0 ? '+' : (cat.subtotal_gap < 0 ? '-' : '');
-                const subGapDisplay = subGapPrefix + formatNumber(Math.abs(cat.subtotal_gap));
+                let subTargetHtml, subAchHtml, subGapHtml;
+                if (cat.has_target) {
+                    const subAchColor = cat.is_achieved ? '#16a34a' : '#dc2626';
+                    const subGapColor = cat.is_achieved ? '#16a34a' : '#dc2626';
+                    const subGapPrefix = cat.subtotal_gap > 0 ? '+' : (cat.subtotal_gap < 0 ? '-' : '');
+                    const subGapDisplay = subGapPrefix + formatNumber(Math.abs(cat.subtotal_gap));
+
+                    subTargetHtml = `<td class="n">${formatNumber(cat.subtotal_target)}</td>`;
+                    subAchHtml = `<td class="n" style="color:${subAchColor};font-weight:700;">${cat.subtotal_achievement}%</td>`;
+                    subGapHtml = `<td class="n" style="color:${subGapColor};font-weight:700;">${subGapDisplay}</td>`;
+                } else {
+                    subTargetHtml = `<td class="n" style="color:#9ca3af;font-weight:600;">-</td>`;
+                    subAchHtml = `<td class="n" style="color:#9ca3af;font-weight:600;">-</td>`;
+                    subGapHtml = `<td class="n" style="color:#9ca3af;font-weight:600;">-</td>`;
+                }
 
                 tbody.innerHTML += `
                     <tr class="sub">
                         <td>Total for ${cat.category_name}</td>
-                        <td class="n">${formatNumber(cat.subtotal_target)}</td>
+                        ${subTargetHtml}
                         <td class="n">${formatNumber(cat.subtotal_actual)}</td>
-                        <td class="n" style="color:${subAchColor};font-weight:700;">${cat.subtotal_achievement}%</td>
-                        <td class="n" style="color:${subGapColor};">${subGapDisplay}</td>
+                        ${subAchHtml}
+                        ${subGapHtml}
                     </tr>
                 `;
             });
 
             // Grand Total Row
-            const totAchColor = res.totals.is_achieved ? '#16a34a' : '#dc2626';
-            const totGapColor = res.totals.is_achieved ? '#16a34a' : '#dc2626';
-            const totGapPrefix = res.totals.gap > 0 ? '+' : (res.totals.gap < 0 ? '-' : '');
-            const totGapDisplay = totGapPrefix + formatNumber(Math.abs(res.totals.gap));
+            let totTargetHtml, totAchHtml, totGapHtml;
+            if (res.totals.target > 0) {
+                const totGapPrefix = res.totals.gap > 0 ? '+' : (res.totals.gap < 0 ? '-' : '');
+                const totGapDisplay = totGapPrefix + formatNumber(Math.abs(res.totals.gap));
+                totTargetHtml = `<td class="n">${formatNumber(res.totals.target)}</td>`;
+                totAchHtml = `<td class="n" style="color:#fff !important;">${res.totals.achievement}%</td>`;
+                totGapHtml = `<td class="n" style="color:#fff !important;">${totGapDisplay}</td>`;
+            } else {
+                totTargetHtml = `<td class="n" style="color:#9ca3af;">-</td>`;
+                totAchHtml = `<td class="n" style="color:#9ca3af;">-</td>`;
+                totGapHtml = `<td class="n" style="color:#9ca3af;">-</td>`;
+            }
 
             tbody.innerHTML += `
                 <tr class="tot">
                     <td>TOTAL</td>
-                    <td class="n">${formatNumber(res.totals.target)}</td>
+                    ${totTargetHtml}
                     <td class="n">${formatNumber(res.totals.actual)}</td>
-                    <td class="n" style="color:#fff !important;">${res.totals.achievement}%</td>
-                    <td class="n" style="color:#fff !important;">${totGapDisplay}</td>
+                    ${totAchHtml}
+                    ${totGapHtml}
                 </tr>
             `;
         }

@@ -173,43 +173,67 @@
                     </tr>
                     @foreach($cat['items'] as $it)
                         @php
-                            $achColor = $it['is_achieved'] ? '#16a34a' : '#dc2626';
-                            $gapColor = $it['is_achieved'] ? '#16a34a' : '#dc2626';
-                            $gapPrefix = $it['gap'] > 0 ? '+' : ($it['gap'] < 0 ? '-' : '');
-                            $gapDisplay = $gapPrefix . number_format(abs($it['gap']));
+                            $hasTarget = !empty($it['has_target']);
+                            if ($hasTarget) {
+                                $achColor = $it['is_achieved'] ? '#16a34a' : '#dc2626';
+                                $gapColor = $it['is_achieved'] ? '#16a34a' : '#dc2626';
+                                $gapPrefix = $it['gap'] > 0 ? '+' : ($it['gap'] < 0 ? '-' : '');
+                                $gapDisplay = $gapPrefix . number_format(abs($it['gap']));
+                            }
                         @endphp
                         <tr class="">
                             <td>{{ $it['name'] }}</td>
-                            <td class="n">{{ number_format($it['target']) }}</td>
+                            <td class="n">
+                                @if($hasTarget)
+                                    {{ number_format($it['target']) }}
+                                @else
+                                    <span style="color:#94a3b8; font-weight:bold;">-</span>
+                                    <span style="display:inline-block; font-size:7px; font-weight:bold; background:#fef3c7; color:#b45309; border:0.5px solid #fde68a; border-radius:50%; width:10px; height:10px; text-align:center; line-height:9px; vertical-align:middle; margin-left:2px;">!</span>
+                                @endif
+                            </td>
                             <td class="n">{{ number_format($it['actual']) }}</td>
-                            <td class="n" style="color:{{ $achColor }};font-weight:bold;">{{ $it['achievement'] }}%</td>
-                            <td class="n" style="color:{{ $gapColor }};">{{ $gapDisplay }}</td>
+                            <td class="n" style="{{ $hasTarget ? 'color:'.$achColor.';font-weight:bold;' : 'color:#94a3b8;font-weight:bold;' }}">
+                                {{ $hasTarget ? $it['achievement'].'%' : '-' }}
+                            </td>
+                            <td class="n" style="{{ $hasTarget ? 'color:'.$gapColor.';' : 'color:#94a3b8;font-weight:bold;' }}">
+                                {{ $hasTarget ? $gapDisplay : '-' }}
+                            </td>
                         </tr>
                     @endforeach
                     @php
-                        $subAchColor = $cat['is_achieved'] ? '#16a34a' : '#dc2626';
-                        $subGapColor = $cat['is_achieved'] ? '#16a34a' : '#dc2626';
-                        $subGapPrefix = $cat['subtotal_gap'] > 0 ? '+' : ($cat['subtotal_gap'] < 0 ? '-' : '');
-                        $subGapDisplay = $subGapPrefix . number_format(abs($cat['subtotal_gap']));
+                        $subHasTarget = !empty($cat['has_target']);
+                        if ($subHasTarget) {
+                            $subAchColor = $cat['is_achieved'] ? '#16a34a' : '#dc2626';
+                            $subGapColor = $cat['is_achieved'] ? '#16a34a' : '#dc2626';
+                            $subGapPrefix = $cat['subtotal_gap'] > 0 ? '+' : ($cat['subtotal_gap'] < 0 ? '-' : '');
+                            $subGapDisplay = $subGapPrefix . number_format(abs($cat['subtotal_gap']));
+                        }
                     @endphp
                     <tr class="sub">
                         <td>Total for {{ $cat['category_name'] }}</td>
-                        <td class="n">{{ number_format($cat['subtotal_target']) }}</td>
+                        <td class="n">{{ $subHasTarget ? number_format($cat['subtotal_target']) : '-' }}</td>
                         <td class="n">{{ number_format($cat['subtotal_actual']) }}</td>
-                        <td class="n" style="color:{{ $subAchColor }};font-weight:bold;">{{ $cat['subtotal_achievement'] }}%</td>
-                        <td class="n" style="color:{{ $subGapColor }};">{{ $subGapDisplay }}</td>
+                        <td class="n" style="{{ $subHasTarget ? 'color:'.$subAchColor.';font-weight:bold;' : 'color:#94a3b8;font-weight:bold;' }}">
+                            {{ $subHasTarget ? $cat['subtotal_achievement'].'%' : '-' }}
+                        </td>
+                        <td class="n" style="{{ $subHasTarget ? 'color:'.$subGapColor.';' : 'color:#94a3b8;font-weight:bold;' }}">
+                            {{ $subHasTarget ? $subGapDisplay : '-' }}
+                        </td>
                     </tr>
                 @endforeach
                 @php
-                    $totGapPrefix = $data['totals']['gap'] > 0 ? '+' : ($data['totals']['gap'] < 0 ? '-' : '');
-                    $totGapDisplay = $totGapPrefix . number_format(abs($data['totals']['gap']));
+                    $totHasTarget = ($data['totals']['target'] > 0);
+                    if ($totHasTarget) {
+                        $totGapPrefix = $data['totals']['gap'] > 0 ? '+' : ($data['totals']['gap'] < 0 ? '-' : '');
+                        $totGapDisplay = $totGapPrefix . number_format(abs($data['totals']['gap']));
+                    }
                 @endphp
                 <tr class="tot">
                     <td>TOTAL</td>
-                    <td class="n">{{ number_format($data['totals']['target']) }}</td>
+                    <td class="n">{{ $totHasTarget ? number_format($data['totals']['target']) : '-' }}</td>
                     <td class="n">{{ number_format($data['totals']['actual']) }}</td>
-                    <td class="n" style="color:#ffffff !important;">{{ $data['totals']['achievement'] }}%</td>
-                    <td class="n" style="color:#ffffff !important;">{{ $totGapDisplay }}</td>
+                    <td class="n" style="color:#ffffff !important;">{{ $totHasTarget ? $data['totals']['achievement'].'%' : '-' }}</td>
+                    <td class="n" style="color:#ffffff !important;">{{ $totHasTarget ? $totGapDisplay : '-' }}</td>
                 </tr>
             </tbody>
         </table>
@@ -217,7 +241,7 @@
 
     <!-- Note Footnote -->
     <div class="note">
-        Units. Target = monthly SKU target prorated to the selected dates. Red = below target (left behind), green = target achieved.
+        Units. Target = monthly SKU target prorated to the selected dates. Red = below target (left behind), green = target achieved. (! = Target not added for this item in selected period)
     </div>
 </body>
 </html>

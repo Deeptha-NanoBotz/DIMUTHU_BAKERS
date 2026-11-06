@@ -2176,7 +2176,7 @@ class ReportController extends Controller
             ->pluck('actual_qty', 'pm_product_item_id')
             ->toArray();
 
-        // Item targets from DB
+        // Item targets from DB for this agent and monthly target
         $itemTargetsMap = [];
         if ($monthlyTargetId) {
             $itemTargets = AdAgentHasItemTargets::where('monthly_target_id', $monthlyTargetId)->get();
@@ -2186,31 +2186,6 @@ class ReportController extends Controller
                 }
             }
         }
-
-        // Baseline defaults for common SKUs if not explicitly configured in DB
-        $baselineMonthlyTargets = [
-            'Kurakkan bread 200g' => 310,
-            'Sandwitch Bread 400g' => 13400,
-            'Budget Pack 100g' => 14000,
-            'Chocolate Budget Pack 100g' => 5200,
-            'Double Bun 90g' => 16500,
-            'Six Pack Bun 270g' => 1550,
-            'Strawberry Budget Pack 100g' => 4150,
-            'Cream Bun 60g' => 400,
-            'Ada Packet 170g' => 410,
-            'Spanchi Packet 170g' => 1030,
-            'Chocolate Cake 500g' => 150,
-            'Date Cake 500g' => 60,
-            'Tea Cake 500g' => 60,
-            'Aman Biscuits 120g' => 50,
-            'Butter Rusk 90g' => 100,
-            'Ghanakatha 135g' => 230,
-            'Iguru Aegili 120g.' => 40,
-            'Seeni Aegili 120g.' => 40,
-            'Seeni Pathuru 145g' => 80,
-            'Tea Rusk 150g' => 930,
-            'Viskirinna 90g' => 70,
-        ];
 
         // Categories in specific bakery order: Bread (5), Bun (4), Cake (6), Rusk & Cookies (7)
         $categories = PmProductCategory::whereIn('id', [5, 4, 6, 7])
@@ -2234,6 +2209,7 @@ class ReportController extends Controller
             $itemsList = [];
             $subTarget = 0;
             $subActual = 0;
+            $subHasTargetCount = 0;
 
             foreach ($catItems as $p) {
                 $pId = $p->id;
@@ -2243,54 +2219,63 @@ class ReportController extends Controller
                     $displayPName = 'Sandwitch Bread 400g';
                 }
 
-                if (isset($itemTargetsMap[$pId])) {
-                    $mTarget = $itemTargetsMap[$pId];
-                } else {
-                    $mTarget = $baselineMonthlyTargets[$p->product_name] ?? ($baselineMonthlyTargets[$cleanName] ?? 50);
-                }
-
-                $proratedTarget = (int) round($mTarget * $prorateRatio);
+                $hasTarget = isset($itemTargetsMap[$pId]) && (float) $itemTargetsMap[$pId] > 0;
                 $actual = (int) ($soldQuantities[$pId] ?? 0);
 
-                $gap = $actual - $proratedTarget;
-                $achievement = $proratedTarget > 0 ? round(($actual / $proratedTarget) * 100) : ($actual > 0 ? 100 : 0);
+                if ($hasTarget) {
+                    $mTarget = (float) $itemTargetsMap[$pId];
+                    $proratedTarget = (int) round($mTarget * $prorateRatio);
+                    $gap = $actual - $proratedTarget;
+                    $achievement = $proratedTarget > 0 ? round(($actual / $proratedTarget) * 100) : 0;
+                    $isAchieved = ($gap >= 0);
+                    $subTarget += $proratedTarget;
+                    $subHasTargetCount++;
+                } else {
+                    $proratedTarget = null;
+                    $gap = null;
+                    $achievement = null;
+                    $isAchieved = null;
+                }
 
                 $itemsList[] = [
                     'id' => $pId,
                     'name' => $displayPName,
+                    'has_target' => $hasTarget,
                     'target' => $proratedTarget,
                     'actual' => $actual,
                     'achievement' => $achievement,
                     'gap' => $gap,
-                    'is_achieved' => ($gap >= 0),
+                    'is_achieved' => $isAchieved,
                 ];
 
-                $subTarget += $proratedTarget;
                 $subActual += $actual;
             }
 
             usort($itemsList, fn($a, $b) => strcmp($a['name'], $b['name']));
 
-            $subGap = $subActual - $subTarget;
-            $subAch = $subTarget > 0 ? round(($subActual / $subTarget) * 100) : ($subActual > 0 ? 100 : 0);
+            $subHasTarget = ($subHasTargetCount > 0);
+            $subGap = $subHasTarget ? ($subActual - $subTarget) : null;
+            $subAch = ($subHasTarget && $subTarget > 0) ? round(($subActual / $subTarget) * 100) : null;
 
             $categoryData[] = [
                 'category_id' => $cat->id,
                 'category_name' => $displayName,
                 'items' => $itemsList,
+                'has_target' => $subHasTarget,
                 'subtotal_target' => $subTarget,
                 'subtotal_actual' => $subActual,
                 'subtotal_achievement' => $subAch,
                 'subtotal_gap' => $subGap,
-                'is_achieved' => ($subGap >= 0),
+                'is_achieved' => ($subGap !== null ? ($subGap >= 0) : null),
             ];
 
             $grandTarget += $subTarget;
             $grandActual += $subActual;
         }
 
-        $grandGap = $grandActual - $grandTarget;
-        $grandAch = $grandTarget > 0 ? round(($grandActual / $grandTarget) * 100) : ($grandActual > 0 ? 100 : 0);
+        $grandHasTarget = ($grandTarget > 0);
+        $grandGap = $grandHasTarget ? ($grandActual - $grandTarget) : null;
+        $grandAch = ($grandHasTarget && $grandTarget > 0) ? round(($grandActual / $grandTarget) * 100) : null;
 
         $sFormatted = $startDate->format('d M Y');
         $eFormatted = $endDate->format('d M Y');
